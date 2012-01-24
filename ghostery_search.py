@@ -3,11 +3,15 @@
 # for a given site, find which scripts regexexs
 # from bugs.json are in the source
 
-import urllib2
+
 import json
 import re
+import csv
 
 from requests import async
+
+DEBUG = False
+bugs = outcsv = None
 
 
 def check_for_scripts(html):
@@ -19,38 +23,37 @@ def check_for_scripts(html):
                 scripts.append(bug['id'])
     return scripts
 
-def check_site(domain):
-    url = "http://" + domain
-    response = urllib2.urlopen(url, timeout=2)
-    html = response.read()
-    
-    return check_for_scripts(html)
 
 nsites = 1
 def check_response(response):
     global nsites
+    if not response.status_code == 200:
+        print response.url, "error"
+        print response.ok
+        return
     try:
         scripts = check_for_scripts(response.text)
         print nsites, response.url, scripts
+        outcsv.writerow([response.url] + scripts)
         nsites += 1
     except Exception, e:
         print e
-        # print  "error"    
-    
+
 
 def check_sites_async(domains):
-    "Get html of sites usign requests.async"
-    rs = (async.get("http://" + domain, hooks=(dict(response=check_response)),
-                    timeout=1.0, prefetch=False)
+    "Get html of sites using requests.async"
+    rs = (async.get(domain, hooks=(dict(response=check_response)),
+                    timeout=10)
             for domain in domains)
-    
-    async.map(rs, size=100)
+    # TODO: multiple smaller maps to get over urlib3 pool perpetual error
+    async.map(rs, prefetch=True, size=5)
 
 
 def import_bugs(bugsfile="bugs.json"):
     with open(bugsfile) as bf:
         bugs = json.load(bf)["bugs"]
     return bugs
+
 
 def compile_regexes(bugs):
     errs = 0
@@ -71,25 +74,20 @@ def import_sites(filename):
             yield site.strip()
 
 
+def main():
+    global bugs, outcsv  # TODO: no globals
+    bugs = compile_regexes(import_bugs())
+    sites = import_sites("top100k")
+    outcsv = csv.writer(open('output.csv', 'w'), lineterminator='\n')
+
+    if DEBUG:
+        sites = import_sites("top100.txt")
+        import random
+        # shuffle list while testing to not spam the same sites all the time
+        sites = list(sites)
+        random.shuffle(sites)
+
+    check_sites_async(sites)
 
 if __name__ == '__main__':
-    global bugs
-    bugs = compile_regexes(import_bugs())
-    #sites = import_sites("top100.txt")
-    sites = import_sites("100k.txt")
-    import random
-    # shuffle list while testing to not spam the same sites all the time
-    sitelist = list(sites)
-    random.shuffle(sitelist)
-    check_sites_async(sitelist)
-    # for site in sites:
-    #     try:
-    #         scripts = check_site(site)
-    #         print site, scripts
-    #     except Exception, e:
-    #         print e
-    #         print site, "error"
-        
-        
-
-    #scripts = check_site("imgur.com")
+    main()
