@@ -7,11 +7,18 @@
 import json
 import re
 import csv
+from itertools import izip, chain, repeat
 
 from requests import async
 
 DEBUG = False
 bugs = outcsv = None
+
+
+
+def grouper(n, iterable, padvalue=None):
+    "grouper(3, 'abcdefg', 'x') --> ('a','b','c'), ('d','e','f'), ('g','x','x')"
+    return izip(*[chain(iterable, repeat(padvalue, n-1))]*n)
 
 
 def check_for_scripts(html):
@@ -45,8 +52,8 @@ def check_sites_async(domains):
     rs = (async.get(domain, hooks=(dict(response=check_response)),
                     timeout=10)
             for domain in domains)
-    # TODO: multiple smaller maps to get over urlib3 pool perpetual error
-    async.map(rs, prefetch=True, size=5)
+    
+    async.map(rs, prefetch=True, size=10)
 
 
 def import_bugs(bugsfile="bugs.json"):
@@ -86,8 +93,10 @@ def main():
         # shuffle list while testing to not spam the same sites all the time
         sites = list(sites)
         random.shuffle(sites)
-
-    check_sites_async(sites)
+    # multiple smaller maps to try to get over urlib3 pool perpetual error
+    sites_chunked = grouper(10, sites)
+    for chunk in sites_chunked:
+        check_sites_async(chunk)
 
 if __name__ == '__main__':
     main()
