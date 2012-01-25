@@ -1,59 +1,104 @@
-"Socket.io Problem 1"
+"""Spider.io Problem 1
 
-# for a given site, find which scripts regexexs
-# from bugs.json are in the source
+For a given site, find which scripts regexes from Ghostery's bugs.json are in
+the source
 
+"""
 
+import logging
 import json
 import re
 import csv
-from itertools import izip, chain, repeat
 
-from requests import async
-
-DEBUG = False
-bugs = outcsv = None
-
+from tornado.ioloop import IOLoop
+from tornado.httpclient import AsyncHTTPClient
+# curl can be faster
+#AsyncHTTPClient.configure("tornado.curl_httpclient.CurlAsyncHTTPClient")
 
 
-def grouper(n, iterable, padvalue=None):
-    "grouper(3, 'abcdefg', 'x') --> ('a','b','c'), ('d','e','f'), ('g','x','x')"
-    return izip(*[chain(iterable, repeat(padvalue, n-1))]*n)
+class CrawlerClient(object):
+    '''HTTP async client.
+
+    * keep track of site being processed
+    * get the page content
+    * check for scripts
+    * write csv
+    * notfiy manger when finished
+    '''
+
+    def __init__(self, manager, client_id):
+        self._client = AsyncHTTPClient(io_loop=manager._ioloop, max_clients=15)
+        self._client_id = client_id
+        self._manager = manager
+        self._site = None
+        self.logger = logging.getLogger('%s C-%s' %
+                (self._manager.logger.name, client_id))
+
+    def is_ready(self):
+        return self._site is None
+
+    def fetch_site(self, site):
+        self._site = site
+        self._client.fetch(site.encode('utf-8'),
+                           self.handle_response,
+                           follow_redirects=True,
+                           max_redirects=10)
+
+    def handle_response(self, response):
+        ''''''
+        scripts = check_for_scripts(response.body, self._manager.bugs)
+        self._manager.csv_writer.writerow([self._site] + scripts)
+        self.logger.debug("%s, %s", self._site, scripts)
+        self.finish()
+
+    def finish(self):
+        '''Inform manager that client is free'''
+        self._manager.done(self)
+        self._site = None
 
 
-def check_for_scripts(html):
-    scripts = []
-    for bug in bugs:
-        if bug['regex']:
-            match = bug['regex'].search(html)
-            if match:
-                scripts.append(bug['id'])
-    return scripts
+class SitesCrawler(object):
+    '''Process a list of site urls using child clients
 
 
-nsites = 1
-def check_response(response):
-    global nsites
-    if not response.status_code == 200:
-        print response.url, "error"
-        print response.ok
-        return
-    try:
-        scripts = check_for_scripts(response.text)
-        print nsites, response.url, scripts
-        outcsv.writerow([response.url] + scripts)
-        nsites += 1
-    except Exception, e:
-        print e
+    n_clients needs testing and tuning
+    '''
 
+    logger = logging.getLogger()
 
-def check_sites_async(domains):
-    "Get html of sites using requests.async"
-    rs = (async.get(domain, hooks=(dict(response=check_response)),
-                    timeout=10)
-            for domain in domains)
-    
-    async.map(rs, prefetch=True, size=10)
+    def __init__(self, ioloop, n_clients, sites, bugs, csv_writer):
+        self._ioloop = ioloop
+        self._clients = [CrawlerClient(self, i) for i in xrange(n_clients)]
+        self._running = False
+        self._sites = sites
+        self.bugs = bugs
+        self.csv_writer = csv_writer
+        self.n_handled = 0
+
+    def pick_client(self):
+        for client in self._clients:
+            if client.is_ready():
+                return client
+        return None
+
+    def run(self):
+        self._running = True
+        while self._sites:
+            client = self.pick_client()
+            if client:
+                site = self._sites.next()
+                client.fetch_site(site)
+            else:
+                # no free clients
+                break
+
+    def done(self, client):
+        '''Site processed, client can handle a new site'''
+        self.n_handled += 1
+        if self.n_handled % 10 == 0:  # log every 10
+            self.logger.info("%i sites processed", self.n_handled)
+        if self._running:
+            self.run()
 
 
 def import_bugs(bugsfile="bugs.json"):
@@ -62,41 +107,52 @@ def import_bugs(bugsfile="bugs.json"):
     return bugs
 
 
+def check_for_scripts(html, bugs):
+    if not html:
+        return []
+    scripts = []
+    try:
+        for bug in bugs:
+            if bug['regex']:
+                match = bug['regex'].search(html)
+                if match:
+                    scripts.append(bug['id'])
+    except Exception, e:  # catch all errs for now
+        print e
+    return scripts
+
+
 def compile_regexes(bugs):
-    errs = 0
+    """Try to compile the js regexes"""
     for bug in bugs:
         try:
             bug['regex'] = re.compile(bug['pattern'])
         except Exception as exc:
-            errs += 1
-            print "error: ", bug['pattern'], bug['id']
+            print "regex error: ", bug['pattern'], bug['id']
             bug['regex'] = None
-    print "regex compile Errors:", errs
     return bugs
 
 
 def import_sites(filename):
+    "Get sites from file as generator"
     with open(filename) as sitesf:
         for site in sitesf.readlines():
             yield site.strip()
 
 
 def main():
-    global bugs, outcsv  # TODO: no globals
+    logging.basicConfig()
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+    ioloop = IOLoop()
+
     bugs = compile_regexes(import_bugs())
     sites = import_sites("top100k")
     outcsv = csv.writer(open('output.csv', 'w'), lineterminator='\n')
 
-    if DEBUG:
-        sites = import_sites("top100.txt")
-        import random
-        # shuffle list while testing to not spam the same sites all the time
-        sites = list(sites)
-        random.shuffle(sites)
-    # multiple smaller maps to try to get over urlib3 pool perpetual error
-    sites_chunked = grouper(10, sites)
-    for chunk in sites_chunked:
-        check_sites_async(chunk)
+    SitesCrawler(ioloop, 15, sites, bugs, outcsv).run()
+    ioloop.start()
+
 
 if __name__ == '__main__':
     main()
