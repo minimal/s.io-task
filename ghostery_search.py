@@ -9,6 +9,7 @@ import logging
 import json
 import re
 import csv
+import time
 
 from tornado.ioloop import IOLoop
 from tornado.httpclient import AsyncHTTPClient
@@ -23,7 +24,7 @@ class CrawlerClient(object):
     * get the page content
     * check for scripts
     * write csv
-    * notfiy manger when finished
+    * notify manager when finished
     '''
 
     def __init__(self, manager, client_id):
@@ -74,6 +75,7 @@ class SitesCrawler(object):
         self.bugs = bugs
         self.csv_writer = csv_writer
         self.n_handled = 0
+        self.time = self.start_time = time.time()
 
     def pick_client(self):
         for client in self._clients:
@@ -96,7 +98,15 @@ class SitesCrawler(object):
         '''Site processed, client can handle a new site'''
         self.n_handled += 1
         if self.n_handled % 10 == 0:  # log every 10
-            self.logger.info("%i sites processed", self.n_handled)
+            tnow = time.time()
+            rate = 10.0 / (tnow - self.time)
+            overall_rate = self.n_handled / (tnow - self.start_time)
+            self.time = tnow
+            self.logger.info("%i sites processed. %f/s burst, %f/s overall",
+                             self.n_handled, rate, overall_rate)
+            if self.n_handled % 100 == 0:
+                eta = (100000 - self.n_handled) / overall_rate / 60
+                self.logger.info("%f minutes remaining", eta)
         if self._running:
             self.run()
 
