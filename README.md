@@ -40,6 +40,17 @@ the tracking scripts and then appends the results to a csv file.
 With 15 clients it manages about 6 sites per second at present. Adding more
 clients doesn't seem to improve the speed and makes it slower eventually.
 
+
+Requirements
+------------
+
+- Python
+- Tornado
+
+
+    $ pip install tornado
+
+
 Usage
 -----
 
